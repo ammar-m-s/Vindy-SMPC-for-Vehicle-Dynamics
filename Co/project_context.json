@@ -1,0 +1,168 @@
+{
+  "project": "Learning-Based MPC Leveraging SINDy for Vehicle Dynamics Estimation",
+  "reference_paper": {
+    "title": "Learning-Based MPC Leveraging SINDy for Vehicle Dynamics Estimation",
+    "authors": "Paparazzo, Castoldi, Sathyamangalam Imran, Arrigoni, Braghin",
+    "journal": "Electronics 2025, 14, 1935",
+    "institution": "Politecnico di Milano"
+  },
+
+  "overall_goal": "Implement the paper's SINDy-MPC framework in MATLAB: identify a 3-DOF bicycle model from simulation data using SINDy, then use it as the predictive model inside an NMPC controller for autonomous vehicle track following.",
+
+  "pipeline_stages": {
+    "stage_1_data_generation": {
+      "status": "in_progress",
+      "description": "Drive a 3-DOF single-track vehicle model around an oval track at multiple speeds, logging states, derivatives, and slip angles for SINDy identification.",
+      "file": "data_gen_sindy.m",
+      "known_issues_resolved": [
+        "Pure pursuit sign was flipped — needed negative sign on feedback term",
+        "Pure pursuit alone cannot track curved roads — added curvature feedforward: delta_ff = atan(L_wb * kappa_lookahead)",
+        "Track turns R=20m were physically impossible at higher speeds (required >2g lateral accel) — increased to R=80m",
+        "P speed controller drove torque to zero at steady state because it had no resistance feedforward — added Tr_ff = Fres * R_wheel as baseline torque",
+        "PD derivative term was noisy with dt=0.001 — switched to pure P + feedforward",
+        "Vehicle stalled due to vx<0.5 safety check triggering — lowered to vx<0.1",
+        "Initial Tr=0 caused speed dip — initialized to resistance-balancing value"
+      ],
+      "current_state": "Last fix added resistance feedforward to speed controller. Needs re-run to verify vehicle completes laps. If slip angles are too small (only ±2-3 deg), data won't cover nonlinear tire region — may need tighter track or chirp excitation later."
+    },
+
+    "stage_2_sindy_identification": {
+      "status": "not_started",
+      "description": "Build library matrix Theta from logged data, run sequential thresholded least squares (or LASSO) to find sparse coefficients c1-c25 for the 3 dynamic equations.",
+      "details": {
+        "states_for_sindy": ["vx", "vy", "omega", "alpha_f", "alpha_r"],
+        "inputs_for_sindy": ["delta", "Tr"],
+        "derivatives_for_sindy": ["vx_dot", "vy_dot", "omega_dot"],
+        "num_coefficients": 25,
+        "library_functions_vx_dot": ["omega*vy", "Tr", "alpha_f*sin(delta)", "alpha_f^3*sin(delta)", "alpha_f^5*sin(delta)", "alpha_f^7*sin(delta)", "vx", "vx^2"],
+        "library_functions_vy_dot": ["omega*vx", "alpha_f*cos(delta)", "alpha_f^3*cos(delta)", "alpha_f^5*cos(delta)", "alpha_f^7*cos(delta)", "alpha_r", "alpha_r^3", "alpha_r^5", "alpha_r^7"],
+        "library_functions_omega_dot": ["alpha_f*cos(delta)", "alpha_f^3*cos(delta)", "alpha_f^5*cos(delta)", "alpha_f^7*cos(delta)", "alpha_r", "alpha_r^3", "alpha_r^5", "alpha_r^7"],
+        "algorithm": "Sequential thresholded least squares with sparsity parameter lambda, 10 iterations (NSINDy=10)",
+        "validation_metric": "R^2 coefficient of determination",
+        "expected_results_3dof": "R^2 > 0.999 for all three accelerations"
+      }
+    },
+
+    "stage_3_offline_mpc": {
+      "status": "not_started",
+      "description": "Build NMPC using CasADi in MATLAB. Predictive model is the full 8-state system (Eq. 16) with c1-c25 as parameters from SINDy. Validate in closed loop against the 3-DOF plant on a different track.",
+      "details": {
+        "solver": "CasADi with direct collocation or multiple shooting (paper uses acados with RTI-SQP)",
+        "cost_function": "Quadratic tracking: sum of (x-x_ref)'*Q*(x-x_ref) + u'*R*u",
+        "hard_constraints": ["track boundaries y_max", "steering rate delta_dot_max", "torque rate Tr_dot_max"],
+        "soft_constraints": ["steering angle delta_max", "torque Tr_max", "lateral acceleration", "longitudinal acceleration"]
+      }
+    },
+
+    "stage_4_online_adaptation": {
+      "status": "not_started",
+      "description": "Start MPC with intentionally wrong model (perturb coefficients ±20%). Run 2 laps, then activate Constrained-SINDy to re-identify coefficients in real time. Compare lap times and trajectory quality before/after.",
+      "details": {
+        "constrained_sindy": "Solve LS minimization with box constraints on coefficients using quadprog: lb = c_offline * 0.8, ub = c_offline * 1.2",
+        "expected_improvement": "~4% lap time reduction, smoother trajectory"
+      }
+    }
+  },
+
+  "vehicle_model": {
+    "type": "3-DOF single-track (bicycle) model",
+    "reference": "Equation 9 in the paper",
+    "states": {
+      "s": "progress along centerline [m]",
+      "y": "lateral deviation from centerline [m]",
+      "xi": "heading error (psi - theta_c) [rad]",
+      "vx": "longitudinal velocity body frame [m/s]",
+      "vy": "lateral velocity body frame [m/s]",
+      "omega": "yaw rate [rad/s]",
+      "delta": "front steering angle [rad]",
+      "Tr": "rear axle torque [Nm]"
+    },
+    "inputs": {
+      "u1": "steering angle rate delta_dot [rad/s]",
+      "u2": "torque rate Tr_dot [Nm/s]"
+    },
+    "equations": {
+      "kinematic_fixed": ["s_dot = (vx*cos(xi) - vy*sin(xi)) / (1 - y*kappa)", "y_dot = vx*sin(xi) + vy*cos(xi)", "xi_dot = omega - kappa*s_dot"],
+      "dynamic_sindy_identified": ["vx_dot = c1*omega*vy + c2*Tr + (c3*af + c4*af^3 + c5*af^5 + c6*af^7)*sin(delta) + c7*vx + c8*vx^2", "vy_dot = c9*omega*vx + (c10*af + c11*af^3 + c12*af^5 + c13*af^7)*cos(delta) + c14*ar + c15*ar^3 + c16*ar^5 + c17*ar^7", "omega_dot = (c18*af + c19*af^3 + c20*af^5 + c21*af^7)*cos(delta) + c22*ar + c23*ar^3 + c24*ar^5 + c25*ar^7"],
+      "integrators": ["delta_dot = u1", "Tr_dot = u2"]
+    },
+    "tire_model": "Pacejka Magic Formula: F = D*sin(C*atan(B*alpha - E*(B*alpha - atan(B*alpha))))",
+    "parameters": {
+      "M": 1412,
+      "Jz": 1536.7,
+      "R_wheel": 0.325,
+      "lf": 1.015,
+      "lr": 1.895,
+      "B_pac_deg": 0.0885,
+      "B_pac_rad": 5.07,
+      "C_pac": 1.4,
+      "D_pac": 8311,
+      "E_pac": -2,
+      "Cr_rolling": 0.015,
+      "Cd_aero": 0.3,
+      "Af": 2.2
+    }
+  },
+
+  "sindy_formulation": {
+    "general_equation": "Xdot = Phi * Theta(X, U)^T",
+    "library_design": "Odd polynomial functions of slip angles (alpha, alpha^3, alpha^5, alpha^7) — justified by odd symmetry of Pacejka lateral forces. Physics-informed: only candidate functions with known physical meaning are included.",
+    "sparsity_promotion": "L1 regularization (LASSO) or sequential thresholded LS with parameter lambda",
+    "constrained_version": "For online use with high-fidelity plant: solve as constrained NLP with box constraints on coefficients to prevent unphysical values. Uses quadprog or acados.",
+    "key_insight": "The 25 coefficients make the bicycle model fully tunable. Tire force curves can be reconstructed from identified weights. Vehicle mass can be inferred from c2 (torque coefficient)."
+  },
+
+  "data_generation_controller": {
+    "steering": {
+      "type": "Curvature feedforward + pure pursuit feedback",
+      "feedforward": "delta_ff = atan(L_wb * kappa_at_lookahead_point)",
+      "feedback": "delta_fb = -atan(2 * L_wb * e_la / Ld^2) where e_la = y + Ld * sin(xi)",
+      "lookahead": "Ld = Ld_min + Kla * vx (speed-dependent)",
+      "note": "Feedforward is essential — pure pursuit alone cannot anticipate road curvature in curvilinear coordinates"
+    },
+    "speed": {
+      "type": "Resistance feedforward + proportional feedback",
+      "feedforward": "Tr_ff = (Cr*M*g + 0.5*rho*Cd*Af*vx^2) * R_wheel",
+      "feedback": "Kp_speed * (v_ref - vx)",
+      "note": "Feedforward prevents stalling — without it, P controller drives torque to zero at steady state"
+    },
+    "rate_interface": "u1 = K_delta * (delta_des - delta_current), u2 = K_T * (T_des - Tr_current)"
+  },
+
+  "track": {
+    "type": "Oval",
+    "R_turn": 80,
+    "L_straight": 150,
+    "total_length": 802.7,
+    "half_width": 8,
+    "max_feasible_speed": 30.7,
+    "note": "R=80m chosen so all test speeds (10-25 m/s) stay within tire friction limits"
+  },
+
+  "simulation_settings": {
+    "dt": 0.001,
+    "integration": "RK4",
+    "v_refs": [10, 15, 20, 25],
+    "n_laps": 2,
+    "downsample_factor": 10,
+    "output_file": "sindy_data.mat"
+  },
+
+  "next_steps_after_data_gen_works": [
+    "1. Verify vehicle completes all laps at all speeds",
+    "2. Check slip angle coverage — need ±5-10+ degrees for nonlinear tire identification",
+    "3. If slip angles too small, add chirp excitation overlay on steering or use tighter track",
+    "4. Implement SINDy: build Theta matrix, run thresholded LS, validate with R^2",
+    "5. Reconstruct tire force curves from identified coefficients",
+    "6. Build NMPC with CasADi using identified model",
+    "7. Test closed-loop MPC on different track",
+    "8. Implement online Constrained-SINDy adaptation with ±20% perturbation scenario"
+  ],
+
+  "user_context": {
+    "name": "Orion",
+    "background": "Control systems and robotics engineering student at AUB. Research in active suspension control (QP-based fault-tolerant allocation for 7-DOF full-car model), quadruped locomotion, and data-driven modeling. Currently taking Data-Driven Modeling course covering SINDy, DMD, neural ODEs, PINNs. Exploring VINDy + Stochastic MPC for vehicle dynamics.",
+    "working_preferences": "Expects full algorithm logic review and agreement before code changes. Single-file MATLAB preferred over multi-file. Wants clear explanations of design decisions.",
+    "related_work": "Has a 7-DOF full-car MATLAB model with QP-based active suspension — future goal is to use that as the plant instead of the 3-DOF model, creating real plant-model mismatch for a more meaningful SINDy identification challenge."
+  }
+}
