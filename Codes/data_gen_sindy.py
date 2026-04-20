@@ -13,6 +13,8 @@ Outputs:
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.io import savemat
+from pathlib import Path
+
 
 # ============================================================
 #  HELPER FUNCTIONS
@@ -306,12 +308,12 @@ print(f"  {X_sindy.shape[0]} samples")
 print("  X:    [vx, vy, omega, alpha_f, alpha_r]")
 print("  Xdot: [vx_dot, vy_dot, omega_dot]")
 print("  U:    [delta, Tr]")
+out_path = Path(__file__).resolve().parent / "../Data/sindy_data.npz"
+out_path.parent.mkdir(parents=True, exist_ok=True)
 
-np.savez('sindy_data.npz',
+
+np.savez(out_path,
          X_sindy=X_sindy, Xdot_sindy=Xdot_sindy, U_sindy=U_sindy)
-savemat('sindy_data.mat',
-        {'X_sindy': X_sindy, 'Xdot_sindy': Xdot_sindy, 'U_sindy': U_sindy})
-print("  Saved to sindy_data.npz and sindy_data.mat\n")
 
 # ============================================================
 #  6. PLOTS
@@ -427,8 +429,10 @@ for d in all_data:
 
 for i, fig_label in enumerate(['trajectories', 'velocities', 'slip_angles', 'tire_forces', 'inputs']):
     plt.figure(i + 1)
-    plt.savefig(f'sindy_plot_{fig_label}.png', dpi=120, bbox_inches='tight')
-    print(f"  Saved sindy_plot_{fig_label}.png")
+    out_path2 = Path(__file__).resolve().parent / f'..\Plots\sindy_plot_{fig_label}.png'
+    out_path2.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path2, dpi=120, bbox_inches='tight')
+    print(f"  Saved to  .\Plots\sindy_plot_{fig_label}.png")
 
 if not _save_only:
     plt.show()
